@@ -1,0 +1,13 @@
+osbook_day10d:console.cpp:    layer_manager->Draw(layer_id_);
+osbook_day10d:main.cpp:  layer_manager->Move(mouse_layer_id, mouse_position);
+osbook_day10d:main.cpp:  layer_manager->SetWriter(&screen);
+osbook_day10d:main.cpp:  auto bglayer_id = layer_manager->NewLayer()
+osbook_day10d:main.cpp:  mouse_layer_id = layer_manager->NewLayer()
+osbook_day10d:main.cpp:  auto main_window_layer_id = layer_manager->NewLayer()
+osbook_day10d:main.cpp:  console->SetLayerID(layer_manager->NewLayer()
+osbook_day10d:main.cpp:  layer_manager->UpDown(bglayer_id, 0);
+osbook_day10d:main.cpp:  layer_manager->UpDown(console->LayerID(), 1);
+osbook_day10d:main.cpp:  layer_manager->UpDown(main_window_layer_id, 2);
+osbook_day10d:main.cpp:  layer_manager->UpDown(mouse_layer_id, 3);
+osbook_day10d:main.cpp:  layer_manager->Draw({{0, 0}, screen_size});
+osbook_day10d:main.cpp:    layer_manager->Draw(main_window_layer_id);

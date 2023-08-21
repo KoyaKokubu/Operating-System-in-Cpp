@@ -1,0 +1,286 @@
+[1mdiff --git a/kernel/terminal.cpp b/kernel/terminal.cpp[m
+[1mindex 9ea0702..7f2a577 100644[m
+[1m--- a/kernel/terminal.cpp[m
+[1m+++ b/kernel/terminal.cpp[m
+[36m@@ -11,6 +11,7 @@[m
+ #include "memory_manager.hpp"[m
+ #include "paging.hpp"[m
+ #include "timer.hpp"[m
+[32m+[m[32m#include "keyboard.hpp"[m
+ [m
+ namespace {[m
+ [m
+[36m@@ -82,85 +83,19 @@[m [muintptr_t GetFirstLoadAddress(Elf64_Ehdr* ehdr) {[m
+ [m
+ static_assert(kBytesPerFrame >= 4096);[m
+ [m
+[31m-WithError<PageMapEntry*> NewPageMap() {[m
+[31m-  auto frame = memory_manager->Allocate(1);[m
+[31m-  if (frame.error) {[m
+[31m-    return { nullptr, frame.error };[m
+[31m-  }[m
+[31m-[m
+[31m-  auto e = reinterpret_cast<PageMapEntry*>(frame.value.Frame());[m
+[31m-  memset(e, 0, sizeof(uint64_t) * 512);[m
+[31m-  return { e, MAKE_ERROR(Error::kSuccess) };[m
+[31m-}[m
+[31m-[m
+[31m-WithError<PageMapEntry*> SetNewPageMapIfNotPresent(PageMapEntry& entry) {[m
+[31m-  if (entry.bits.present) {[m
+[31m-    return { entry.Pointer(), MAKE_ERROR(Error::kSuccess) };[m
+[31m-  }[m
+[31m-[m
+[31m-  auto [ child_map, err ] = NewPageMap();[m
+[31m-  if (err) {[m
+[31m-    return { nullptr, err };[m
+[31m-  }[m
+[31m-[m
+[31m-  entry.SetPointer(child_map);[m
+[31m-  entry.bits.present = 1;[m
+[31m-[m
+[31m-  return { child_map, MAKE_ERROR(Error::kSuccess) };[m
+[31m-}[m
+[31m-[m
+[31m-WithError<size_t> SetupPageMap([m
+[31m-    PageMapEntry* page_map, int page_map_level, LinearAddress4Level addr, size_t num_4kpages) {[m
+[31m-  while (num_4kpages > 0) {[m
+[31m-    const auto entry_index = addr.Part(page_map_level);[m
+[31m-[m
+[31m-    auto [ child_map, err ] = SetNewPageMapIfNotPresent(page_map[entry_index]);[m
+[31m-    if (err) {[m
+[31m-      return { num_4kpages, err };[m
+[31m-    }[m
+[31m-    page_map[entry_index].bits.writable = 1;[m
+[31m-    page_map[entry_index].bits.user = 1;[m
+[31m-[m
+[31m-    if (page_map_level == 1) {[m
+[31m-      --num_4kpages;[m
+[31m-    } else {[m
+[31m-      auto [ num_remain_pages, err ] =[m
+[31m-        SetupPageMap(child_map, page_map_level - 1, addr, num_4kpages);[m
+[31m-      if (err) {[m
+[31m-        return { num_4kpages, err };[m
+[31m-      }[m
+[31m-      num_4kpages = num_remain_pages;[m
+[31m-    }[m
+[31m-[m
+[31m-    if (entry_index == 511) {[m
+[31m-      break;[m
+[31m-    }[m
+[31m-[m
+[31m-    addr.SetPart(page_map_level, entry_index + 1);[m
+[31m-    for (int level = page_map_level - 1; level >= 1; --level) {[m
+[31m-      addr.SetPart(level, 0);[m
+[31m-    }[m
+[31m-  }[m
+[31m-[m
+[31m-  return { num_4kpages, MAKE_ERROR(Error::kSuccess) };[m
+[31m-}[m
+[31m-[m
+[31m-Error SetupPageMaps(LinearAddress4Level addr, size_t num_4kpages) {[m
+[31m-  auto pml4_table = reinterpret_cast<PageMapEntry*>(GetCR3());[m
+[31m-  return SetupPageMap(pml4_table, 4, addr, num_4kpages).error;[m
+[31m-}[m
+[31m-[m
+[31m-Error CopyLoadSegments(Elf64_Ehdr* ehdr) {[m
+[32m+[m[32mWithError<uint64_t> CopyLoadSegments(Elf64_Ehdr* ehdr) {[m
+   auto phdr = GetProgramHeader(ehdr);[m
+[32m+[m[32m  uint64_t last_addr = 0;[m
+   for (int i = 0; i < ehdr->e_phnum; ++i) {[m
+     if (phdr[i].p_type != PT_LOAD) continue;[m
+ [m
+     LinearAddress4Level dest_addr;[m
+     dest_addr.value = phdr[i].p_vaddr;[m
+[32m+[m[32m    last_addr = std::max(last_addr, phdr[i].p_vaddr + phdr[i].p_memsz);[m
+     const auto num_4kpages = (phdr[i].p_memsz + 4095) / 4096;[m
+ [m
+     if (auto err = SetupPageMaps(dest_addr, num_4kpages)) {[m
+[31m-      return err;[m
+[32m+[m[32m      return { last_addr, err };[m
+     }[m
+ [m
+     const auto src = reinterpret_cast<uint8_t*>(ehdr) + phdr[i].p_offset;[m
+[36m@@ -168,61 +103,20 @@[m [mError CopyLoadSegments(Elf64_Ehdr* ehdr) {[m
+     memcpy(dst, src, phdr[i].p_filesz);[m
+     memset(dst + phdr[i].p_filesz, 0, phdr[i].p_memsz - phdr[i].p_filesz);[m
+   }[m
+[31m-  return MAKE_ERROR(Error::kSuccess);[m
+[32m+[m[32m  return { last_addr, MAKE_ERROR(Error::kSuccess) };[m
+ }[m
+ [m
+[31m-Error LoadELF(Elf64_Ehdr* ehdr) {[m
+[32m+[m[32mWithError<uint64_t> LoadELF(Elf64_Ehdr* ehdr) {[m
+   if (ehdr->e_type != ET_EXEC) {[m
+[31m-    return MAKE_ERROR(Error::kInvalidFormat);[m
+[32m+[m[32m    return { 0, MAKE_ERROR(Error::kInvalidFormat) };[m
+   }[m
+ [m
+   const auto addr_first = GetFirstLoadAddress(ehdr);[m
+   if (addr_first < 0xffff'8000'0000'0000) {[m
+[31m-    return MAKE_ERROR(Error::kInvalidFormat);[m
+[31m-  }[m
+[31m-[m
+[31m-  if (auto err = CopyLoadSegments(ehdr)) {[m
+[31m-    return err;[m
+[32m+[m[32m    return { 0, MAKE_ERROR(Error::kInvalidFormat) };[m
+   }[m
+ [m
+[31m-  return MAKE_ERROR(Error::kSuccess);[m
+[31m-}[m
+[31m-[m
+[31m-Error CleanPageMap(PageMapEntry* page_map, int page_map_level) {[m
+[31m-  for (int i = 0; i < 512; ++i) {[m
+[31m-    auto entry = page_map[i];[m
+[31m-    if (!entry.bits.present) {[m
+[31m-      continue;[m
+[31m-    }[m
+[31m-[m
+[31m-    if (page_map_level > 1) {[m
+[31m-      if (auto err = CleanPageMap(entry.Pointer(), page_map_level - 1)) {[m
+[31m-        return err;[m
+[31m-      }[m
+[31m-    }[m
+[31m-[m
+[31m-    const auto entry_addr = reinterpret_cast<uintptr_t>(entry.Pointer());[m
+[31m-    const FrameID map_frame{entry_addr / kBytesPerFrame};[m
+[31m-    if (auto err = memory_manager->Free(map_frame, 1)) {[m
+[31m-      return err;[m
+[31m-    }[m
+[31m-    page_map[i].data = 0;[m
+[31m-  }[m
+[31m-[m
+[31m-  return MAKE_ERROR(Error::kSuccess);[m
+[31m-}[m
+[31m-[m
+[31m-Error CleanPageMaps(LinearAddress4Level addr) {[m
+[31m-  auto pml4_table = reinterpret_cast<PageMapEntry*>(GetCR3());[m
+[31m-  auto pdp_table = pml4_table[addr.parts.pml4].Pointer();[m
+[31m-  pml4_table[addr.parts.pml4].data = 0;[m
+[31m-  if (auto err = CleanPageMap(pdp_table, 3)) {[m
+[31m-    return err;[m
+[31m-  }[m
+[31m-[m
+[31m-  const auto pdp_addr = reinterpret_cast<uintptr_t>(pdp_table);[m
+[31m-  const FrameID pdp_frame{pdp_addr / kBytesPerFrame};[m
+[31m-  return memory_manager->Free(pdp_frame, 1);[m
+[32m+[m[32m  return CopyLoadSegments(ehdr);[m
+ }[m
+ [m
+ WithError<PageMapEntry*> SetupPML4(Task& current_task) {[m
+[36m@@ -245,8 +139,7 @@[m [mError FreePML4(Task& current_task) {[m
+   current_task.Context().cr3 = 0;[m
+   ResetCR3();[m
+ [m
+[31m-  const FrameID frame{cr3 / kBytesPerFrame};[m
+[31m-  return memory_manager->Free(frame, 1);[m
+[32m+[m[32m  return FreePageMap(reinterpret_cast<PageMapEntry*>(cr3));[m
+ }[m
+ [m
+ void ListAllEntries(Terminal* term, uint32_t dir_cluster) {[m
+[36m@@ -505,9 +398,12 @@[m [mError Terminal::ExecuteFile(const fat::DirectoryEntry& file_entry, char* command[m
+     return pml4.error;[m
+   }[m
+ [m
+[31m-  if (auto err = LoadELF(elf_header)) {[m
+[31m-    return err;[m
+[32m+[m[32m  // #@@range_begin(get_elf_last_addr)[m
+[32m+[m[32m  const auto [ elf_last_addr, elf_err ] = LoadELF(elf_header);[m
+[32m+[m[32m  if (elf_err) {[m
+[32m+[m[32m    return elf_err;[m
+   }[m
+[32m+[m[32m  // #@@range_end(get_elf_last_addr)[m
+ [m
+   LinearAddress4Level args_frame_addr{0xffff'ffff'ffff'f000};[m
+   if (auto err = SetupPageMaps(args_frame_addr, 1)) {[m
+[36m@@ -527,17 +423,24 @@[m [mError Terminal::ExecuteFile(const fat::DirectoryEntry& file_entry, char* command[m
+     return err;[m
+   }[m
+ [m
+[31m-  // #@@range_begin(add_stdin_fd)[m
+[31m-  task.Files().push_back([m
+[31m-      std::make_unique<TerminalFileDescriptor>(task, *this));[m
+[32m+[m[32m  for (int i = 0; i < 3; ++i) {[m
+[32m+[m[32m    task.Files().push_back([m
+[32m+[m[32m        std::make_unique<TerminalFileDescriptor>(task, *this));[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  // #@@range_begin(set_dp_range)[m
+[32m+[m[32m  const uint64_t elf_next_page =[m
+[32m+[m[32m    (elf_last_addr + 4095) & 0xffff'ffff'ffff'f000;[m
+[32m+[m[32m  task.SetDPagingBegin(elf_next_page);[m
+[32m+[m[32m  task.SetDPagingEnd(elf_next_page);[m
+ [m
+   auto entry_addr = elf_header->e_entry;[m
+   int ret = CallApp(argc.value, argv, 3 << 3 | 3, entry_addr,[m
+[32m+[m[32m  // #@@range_end(set_dp_range)[m
+                     stack_frame_addr.value + 4096 - 8,[m
+                     &task.OSStackPointer());[m
+ [m
+   task.Files().clear();[m
+[31m-  // #@@range_end(add_stdin_fd)[m
+ [m
+   char s[64];[m
+   sprintf(s, "app exited. ret = %d\n", ret);[m
+[36m@@ -632,8 +535,6 @@[m [mRectangle<int> Terminal::HistoryUpDown(int direction) {[m
+   return draw_area;[m
+ }[m
+ [m
+[31m-std::map<uint64_t, Terminal*>* terminals;[m
+[31m-[m
+ void TaskTerminal(uint64_t task_id, int64_t data) {[m
+   const char* command_line = reinterpret_cast<char*>(data);[m
+   const bool show_window = command_line == nullptr;[m
+[36m@@ -646,7 +547,6 @@[m [mvoid TaskTerminal(uint64_t task_id, int64_t data) {[m
+     layer_task_map->insert(std::make_pair(terminal->LayerID(), task_id));[m
+     active_layer->Activate(terminal->LayerID());[m
+   }[m
+[31m-  (*terminals)[task_id] = terminal;[m
+   __asm__("sti");[m
+ [m
+   if (command_line) {[m
+[36m@@ -709,13 +609,10 @@[m [mvoid TaskTerminal(uint64_t task_id, int64_t data) {[m
+   }[m
+ }[m
+ [m
+[31m-// #@@range_begin(term_fd_ctor)[m
+ TerminalFileDescriptor::TerminalFileDescriptor(Task& task, Terminal& term)[m
+     : task_{task}, term_{term} {[m
+ }[m
+[31m-// #@@range_end(term_fd_ctor)[m
+ [m
+[31m-// #@@range_begin(term_fd_read)[m
+ size_t TerminalFileDescriptor::Read(void* buf, size_t len) {[m
+   char* bufc = reinterpret_cast<char*>(buf);[m
+ [m
+[36m@@ -728,11 +625,26 @@[m [msize_t TerminalFileDescriptor::Read(void* buf, size_t len) {[m
+     }[m
+     __asm__("sti");[m
+ [m
+[31m-    if (msg->type == Message::kKeyPush && msg->arg.keyboard.press) {[m
+[31m-      bufc[0] = msg->arg.keyboard.ascii;[m
+[31m-      term_.Print(bufc, 1);[m
+[31m-      return 1;[m
+[32m+[m[32m    if (msg->type != Message::kKeyPush || !msg->arg.keyboard.press) {[m
+[32m+[m[32m      continue;[m
+[32m+[m[32m    }[m
+[32m+[m[32m    if (msg->arg.keyboard.modifier & (kLControlBitMask | kRControlBitMask)) {[m
+[32m+[m[32m      char s[3] = "^ ";[m
+[32m+[m[32m      s[1] = toupper(msg->arg.keyboard.ascii);[m
+[32m+[m[32m      term_.Print(s);[m
+[32m+[m[32m      if (msg->arg.keyboard.keycode == 7 /* D */) {[m
+[32m+[m[32m        return 0; // EOT[m
+[32m+[m[32m      }[m
+[32m+[m[32m      continue;[m
+     }[m
+[32m+[m
+[32m+[m[32m    bufc[0] = msg->arg.keyboard.ascii;[m
+[32m+[m[32m    term_.Print(bufc, 1);[m
+[32m+[m[32m    return 1;[m
+   }[m
+ }[m
+[31m-// #@@range_end(term_fd_read)[m
+[32m+[m
+[32m+[m[32msize_t TerminalFileDescriptor::Write(const void* buf, size_t len) {[m
+[32m+[m[32m  term_.Print(reinterpret_cast<const char*>(buf), len);[m
+[32m+[m[32m  return len;[m
+[32m+[m[32m}[m
